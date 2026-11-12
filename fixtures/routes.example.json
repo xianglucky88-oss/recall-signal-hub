@@ -1,0 +1,16 @@
+{
+  "subscriptions": [
+    {
+      "recipient_id": "eu-safety-desk",
+      "markets": ["EU"],
+      "min_severity": "high",
+      "endpoint": "http://127.0.0.1:9101/eu-alerts"
+    },
+    {
+      "recipient_id": "global-watch",
+      "markets": ["EU", "US"],
+      "min_severity": "medium",
+      "endpoint": "http://127.0.0.1:9102/global-alerts"
+    }
+  ]
+}

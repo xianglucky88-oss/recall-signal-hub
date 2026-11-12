@@ -12,6 +12,7 @@ from .outbox import Outbox
 from .normalize import NormalizationError, evidence_bytes, normalize
 from .reconcile import case_key, case_fingerprint, summarize
 from .risk import needs_alert
+from .routing import RouteConfig
 
 
 class StaleCursor(RuntimeError):
@@ -20,7 +21,7 @@ class StaleCursor(RuntimeError):
 
 class RecallStore:
     """Persistent collection state. One connection per worker; transactions serialize writers."""
-    def __init__(self, database: str | Path):
+    def __init__(self, database: str | Path, route_config: RouteConfig | None = None):
         self.connection = sqlite3.connect(database, isolation_level=None, timeout=5)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys=ON")
@@ -50,6 +51,7 @@ class RecallStore:
             case_key TEXT NOT NULL REFERENCES cases(case_key), revision INTEGER NOT NULL,
             summary TEXT NOT NULL, PRIMARY KEY(case_key, revision));
         """)
+        self.route_config = route_config
         self.outbox = Outbox(self.connection)
 
     def close(self) -> None:
@@ -134,7 +136,18 @@ class RecallStore:
                 changed += 1
                 previous_summary = json.loads(prior["summary"]) if prior else None
                 if rows and needs_alert(previous_summary, summary):
-                    self.outbox.enqueue(key, revision, summary["severity"], payload, now)
+                    if self.route_config is None:
+                        # No routing configuration: keep the single-target baseline behavior.
+                        self.outbox.enqueue(key, revision, summary["severity"], payload, now)
+                    else:
+                        # Risk rules have already decided an alert is needed; routing
+                        # only expands recipients from the alert's immutable summary.
+                        _, recipients = self.route_config.expand(summary)
+                        endpoints = {s.recipient_id: s.endpoint
+                                     for s in self.route_config.subscriptions}
+                        self.outbox.enqueue_routed(
+                            key, revision, summary["severity"], payload,
+                            self.route_config.version, recipients, endpoints, now)
                     alerts += 1
             self.connection.execute("""INSERT INTO source_state(source,cursor) VALUES(?,?)
                 ON CONFLICT(source) DO UPDATE SET cursor=excluded.cursor, failures=0, not_before=0""", (source, next_cursor))
@@ -145,5 +158,7 @@ class RecallStore:
         return [{"case_key":r["case_key"], "revision":r["revision"], **json.loads(r["summary"])} for r in rows]
 
     def counts(self) -> dict[str, int]:
-        return {table:self.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                for table in ("raw_evidence", "rejected_records", "cases", "source_signals", "case_revisions", "outbox")}
+        tables = ("raw_evidence", "rejected_records", "cases", "source_signals",
+                  "case_revisions", "outbox", "outbox_alerts", "outbox_targets")
+        return {table: self.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in tables}

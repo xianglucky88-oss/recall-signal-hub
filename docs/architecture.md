@@ -11,7 +11,8 @@ flowchart LR
     R --> I
     I --> D[事务证据与案例存储]
     D --> Q[告警 outbox]
-    Q --> A[租约投递与接收方幂等]
+    Q --> T[订阅展开与按目标任务]
+    T --> A[租约投递与接收方幂等]
 ```
 
 ## 发布方接入
@@ -63,10 +64,21 @@ Webhook 始终携带同一案例修订的固定 `Idempotency-Key`。本地状态
 
 测试入口：`tests/test_delivery.py`、`tests/test_http.py`。
 
+## 按目标路由与独立记账
+
+无路由配置时，投递保持上面的单目标 `outbox` 行为，完全不变。提供本地路由配置（`routing.py` 的 `RouteConfig`）后，风险规则是否告警的判定不变，路由只在 `needs_alert` 已判定需要通知之后，依据该条告警不可变的案例摘要（市场、风险等级）展开收件目标。
+
+- 订阅声明稳定的 `recipient_id`、市场集合与最低风险等级；市场按标准化口径匹配。`RouteConfig` 的版本只由订阅内容做 SHA-256 内容寻址，相同配置得到相同版本，与加载时机和顺序无关。
+- 展开与告警在同一写事务内持久化到 `outbox_alerts` 与 `outbox_targets`：目标集合在任何任务可被领取之前固定，记录所用 `route_version`、每个接收方当时的端点快照；`UNIQUE(alert_id, recipient_id)` 保证同一接收方只生成一份任务。无人匹配时 `target_count=0` 且没有任务行，是可解释的“无目标”终态，而不是仍在等待的空队列。
+- 每个目标独立保存 `pending/leased/delivered/paused` 状态、租约、尝试次数、退避时间与最后错误。接收端幂等键为 `recall:<case_key>:<revision>:<recipient_id>`，同时区分案件修订与接收方；任一目标成功不会把其余目标一并完成，一个目标失败只退避它自己。
+- 加载新的 `RouteConfig` 不会修改任何已排队任务：任务继续使用展开时冻结的接收方、端点与配置版本，新订阅不会回填旧告警，也不会把旧任务静默改派。`RouteAdministrator` 只报告漂移（接收方移除、端点改变）；变更任务必须走显式、带审计事件的决定——`pause_target`（暂停，保留原快照直到显式恢复）或 `repoint_target`（显式改派到新端点，接收方与幂等键不变）。
+
+测试入口：`tests/test_routing.py`（含两个目标同时命中、一败一成、订阅变更、旧领取者迟到确认的端到端场景）、`tests/test_cli.py` 的路由 CLI 用例。所有验证只使用 `RecordingTargetSink` 或本地 HTTP 接收替身，不向真实接收方发消息。
+
 ## 模块演进约束
 
 - 传输与发布方格式的变化通过 `SourceAdapter` 输出契约隔离。
-- 产品身份与多来源归并保持在 `reconcile.py`，风险规则在 `risk.py`。
-- 投递协议与队列租约分别位于 `alerts.py` 和 `outbox.py`，不放进采集管线。
+- 产品身份与多来源归并保持在 `reconcile.py`，风险规则在 `risk.py`；路由（`routing.py`）只在风险规则已判定需要告警之后展开目标，不改变危险分级、案件身份或告警创建时机。
+- 投递协议与队列租约分别位于 `alerts.py` 和 `outbox.py`，不放进采集管线；按目标的展开持久化与显式漂移处理位于 `outbox.py`、`route_admin.py`。
 - SQLite 的连接与事务辅助只有 `database.py`；它是共享基础设施，不是每个功能必须重写的业务模块。
 - 根目录 CLI 只组装依赖，不承载业务判定。

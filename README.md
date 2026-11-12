@@ -14,6 +14,7 @@
 | 风险策略 | `risk.py` | 可独立配置的规则、策略版本、判定原因、告警触发规则 |
 | 采集状态与证据 | `storage.py`、`database.py`、`pipeline.py` | 原始业务载荷、游标原子提交、失败退避、案例修订 |
 | 告警可靠投递 | `outbox.py`、`alerts.py` | 队列租约、失效租约隔离、重投、接收方幂等键 |
+| 按目标路由 | `routing.py`、`route_admin.py` | 稳定接收方标识、内容寻址配置版本、目标集合冻结、每目标独立记账、漂移显式处理 |
 
 具体接口、状态和测试对应关系见 [模块契约](docs/architecture.md)。CLI 只是启动和检查入口，项目核心是数据采集与风险事件处理。
 
@@ -62,6 +63,23 @@ PYTHONPATH=src python -m recall_signal_hub.cli dispatch --webhook \
 
 真实 webhook 接收端需要支持 `Idempotency-Key`。投递语义是至少一次；远端接收成功但本地确认之前的中断会导致重投，相同告警的幂等键保持不变。
 
+## 按目标路由
+
+不提供路由配置时，系统保持单目标投递：告警进入 `outbox`，行为与基线完全一致。提供本地路由配置后，告警在风险规则判定需要通知之后展开为按接收方记账的独立任务：
+
+```bash
+PYTHONPATH=src python -m recall_signal_hub.cli collect \
+  --fixture fixtures/recalls.json --routes fixtures/routes.example.json \
+  --database /tmp/recall-signal-hub-routed.sqlite3
+PYTHONPATH=src python -m recall_signal_hub.cli dispatch \
+  --routes fixtures/routes.example.json \
+  --database /tmp/recall-signal-hub-routed.sqlite3
+```
+
+路由配置声明稳定接收方标识、市场范围与最低风险等级；配置版本由内容哈希确定。目标集合在任务首次可领取前固定，并冻结每个接收方的端点与所用配置版本。每个目标独立保存领取、尝试、成功、退避与暂停状态，幂等键同时区分案件修订与接收方；一个接收方失败不会影响其他接收方。订阅之后被移除或端点改变时，已排队任务默认继续使用原版本与原端点；漂移只被报告，必须通过显式暂停或显式改派处理并留下审计事件，不会静默改派。无接收方匹配时记录为零目标的可解释终态。
+
+`--webhook` 路由模式下每个任务投递到自身冻结的端点，无需单一环境变量端点；本地演示默认仍使用进程内接收替身，不联系真实接收人。
+
 ## 测试与构建
 
 ```bash
@@ -70,7 +88,7 @@ PYTHONPATH=src python -m pytest -q
 python -m pip wheel --no-deps .
 ```
 
-测试包含本地 HTTP 采集和 webhook、Unicode、发布方格式错误、跨源风险冲突、坏记录隔离、事务故障回滚、游标竞争、退避持久化、租约过期、进程中断重投与 CLI 重启。没有外网测试。
+测试包含本地 HTTP 采集和 webhook、Unicode、发布方格式错误、跨源风险冲突、坏记录隔离、事务故障回滚、游标竞争、退避持久化、租约过期、进程中断重投、按目标路由展开与独立记账、订阅漂移与 CLI 重启。没有外网测试。
 
 ## 后续扩展边界
 
