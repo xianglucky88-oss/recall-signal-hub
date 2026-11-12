@@ -23,9 +23,29 @@ flowchart LR
 
 两个格式都用顶层 `next_cursor` 返回下一位置。位置必须单调递增且为正整数；适配器过滤已提交的重叠记录，拒绝倒退或无序页。每页最多 2000 条，HTTP 响应最多 2 MB，默认超时 10 秒。传输层只允许无内嵌账号密码的 HTTP/HTTPS 地址。
 
-网络获取发生在事务外。获取成功后，存储层对旧游标做比较并交换检查；竞争失败返回 `superseded`，不会覆盖其他 worker 的进度。整页错误不推进位置。网络错误按来源持久化指数退避，2 秒起步、上限 300 秒。
+### 快照来源 `snapshot-feed`
 
-测试入口：`tests/test_http.py`、`tests/test_collection.py`。
+第三种格式按代次提供完整快照，语义与上述两种增量格式完全不同，由 `SnapshotHttpSource` / `CollectionPipeline.collect_snapshot` 承载。无 `token` 查询参数的请求开启一代；响应为 `generation`（单调递增正整数）、`records`（记录封装沿用 `product-feed`，但 `sequence` 只在同一代内递增，换代后重置）和 `next_token`。`next_token` 是不可解析、不可比较的字符串，仅作为下一页请求的 `token` 参数原样回传；为 `null` 表示本代收齐。发布方以 HTTP 410 表示标记失效，传输层把状态码保留在 `TransportError.status_code`，接入层转成 `ContinuationExpired`。
+
+进度分两层，互不混用：
+
+- **可恢复的接收进度**：`snapshot_receptions`、`snapshot_pages`、`snapshot_records` 三张暂存表保存当前在收的代次、已收页（按请求标记记录页面内容哈希）和按代内序号落库的记录。中间页只写暂存区，绝不触碰 `raw_evidence`、`source_signals`、`cases`、`case_revisions` 或 outbox，因此正式案例看不到任何半代变更。
+- **正式采集进度**：`source_state.applied_generation` 记录唯一已生效代次。整代收齐后，`RecallStore.apply_snapshot` 在一个 `BEGIN IMMEDIATE` 事务内比较并交换该列、流式处理暂存记录（每块 `APPLY_CHUNK_SIZE` 条，整代不进内存）、更新证据与案例、入队告警，成功后清空该代暂存区。任何一步失败都整体回滚。
+
+恢复与竞争规则：
+
+- 进程停在收页途中，重开后凭暂存的 `next_token` 续传；停在最后一页与正式提交之间，重开后识别 `complete` 暂存并直接完成切换，不重复建修订。
+- 410 或翻页响应出现更高/不同代次时，未完成的旧代由 `abandon_snapshot_reception` 整体丢弃，状态为 `restarted`，下一轮无标记请求开启新代，旧代与新代不会混用。
+- 同一标记重发相同页面：内容哈希一致，暂存幂等无变化；重发不同内容抛出 `SnapshotConflict`，该页被拒绝且原接收进度保留。
+- 两个采集者竞争时，`apply_snapshot` 的代次比较并交换保证较旧代次与迟到的旧尝试得到 `StaleGeneration`（管线状态 `superseded`），不能覆盖已生效的新代。
+- 快照只声明本代存在的记录：快照中未出现的旧记录继续保留，不视为撤回。
+- 重复接收已生效的同一代：无标记响应的代次等于 `applied_generation` 时直接返回 `completed`，不产生修订或告警；代次倒退则按发布方异常处理。
+
+增量来源的整数 `cursor` 列含义不变；`applied_generation` 仅对快照来源非空，老数据库通过 `ALTER TABLE` 平滑加列，既有游标与证据摘要保留原义，不需要清库。
+
+网络获取发生在事务外。增量来源获取成功后，存储层对旧游标做比较并交换检查；竞争失败返回 `superseded`，不会覆盖其他 worker 的进度。整页错误不推进位置。网络错误按来源持久化指数退避，2 秒起步、上限 300 秒；快照的 410/换代属于可立即重试的预期轮换，不计失败退避。
+
+测试入口：`tests/test_http.py`、`tests/test_collection.py`、`tests/test_snapshot.py`、`tests/test_snapshot_http.py`。
 
 ## 标准化与风险
 

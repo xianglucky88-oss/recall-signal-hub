@@ -8,11 +8,11 @@
 
 | 责任 | 生产模块 | 可观察结果 |
 | --- | --- | --- |
-| 发布方接入 | `sources.py`、`transport.py` | 两种发布格式、增量页、响应大小限制、失败分类 |
+| 发布方接入 | `sources.py`、`transport.py` | 两种增量格式与 `snapshot-feed` 代次快照、不透明续传标记、410 失效分类、响应大小限制 |
 | 记录标准化 | `normalize.py` | Unicode 兼容、字段校验、坏记录隔离 |
 | 产品身份与跨源归并 | `reconcile.py` | 相同品牌/型号/市场归为同一案例，各来源风险声明合并 |
 | 风险策略 | `risk.py` | 可独立配置的规则、策略版本、判定原因、告警触发规则 |
-| 采集状态与证据 | `storage.py`、`database.py`、`pipeline.py` | 原始业务载荷、游标原子提交、失败退避、案例修订 |
+| 采集状态与证据 | `storage.py`、`database.py`、`pipeline.py` | 原始业务载荷、游标/代次原子提交、快照两层进度、失败退避、案例修订 |
 | 告警可靠投递 | `outbox.py`、`alerts.py` | 队列租约、失效租约隔离、重投、接收方幂等键 |
 
 具体接口、状态和测试对应关系见 [模块契约](docs/architecture.md)。CLI 只是启动和检查入口，项目核心是数据采集与风险事件处理。
@@ -51,7 +51,15 @@ PYTHONPATH=src python -m recall_signal_hub.cli collect --http \
   --database /tmp/recall-signal-hub.sqlite3
 ```
 
-另一个支持的格式是 `recall-bulletin`。每次采集处理一页，通过 `after` 查询参数传入已提交位置；调度方可以重复调用直到无新记录。发布方必须提供单调递增的正整数位置。
+另一个增量格式是 `recall-bulletin`。每次采集处理一页，通过 `after` 查询参数传入已提交位置；调度方可以重复调用直到无新记录。发布方必须提供单调递增的正整数位置。
+
+第三种格式 `snapshot-feed` 是按代次交付完整快照的发布方。无 `token` 的请求开启一代，响应给出单调递增的正整数 `generation`、本页 `records` 和不透明的 `next_token`（`null` 表示本代结束）；后续请求把标记原样放入 `token` 参数，发布方用 HTTP 410 表示标记失效。中间页只形成可恢复的接收进度，正式证据、案例和告警在整代收齐后的一个事务里一次生效；快照未列出的旧记录不视为撤回。调度方重复调用 collect，先看到 `receiving`/`restarted`，代次生效时为 `completed`：
+
+```bash
+PYTHONPATH=src python -m recall_signal_hub.cli collect --http \
+  --source consumer-agency --format snapshot-feed \
+  --database /tmp/recall-signal-hub.sqlite3
+```
 
 由部署环境注入 `RECALL_WEBHOOK_URL` 后：
 
@@ -70,7 +78,7 @@ PYTHONPATH=src python -m pytest -q
 python -m pip wheel --no-deps .
 ```
 
-测试包含本地 HTTP 采集和 webhook、Unicode、发布方格式错误、跨源风险冲突、坏记录隔离、事务故障回滚、游标竞争、退避持久化、租约过期、进程中断重投与 CLI 重启。没有外网测试。
+测试包含本地 HTTP 采集和 webhook、Unicode、发布方格式错误、跨源风险冲突、坏记录隔离、事务故障回滚、游标竞争、退避持久化、租约过期、进程中断重投、CLI 重启，以及快照来源的中途重启、410 换代、同标记内容冲突、新旧采集者交错、代次幂等和页级内存限制。没有外网测试。
 
 ## 后续扩展边界
 

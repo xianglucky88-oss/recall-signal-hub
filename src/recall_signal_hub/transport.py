@@ -9,6 +9,10 @@ from urllib.request import Request, urlopen
 class TransportError(RuntimeError):
     """A sanitized failure: never echo endpoint query strings or credentials."""
 
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
 
 @dataclass
 class HttpTransport:
@@ -28,6 +32,6 @@ class HttpTransport:
                     raise TransportError("HTTP body exceeds configured size limit")
                 return body
         except HTTPError as exc:
-            raise TransportError(f"HTTP status {exc.code}") from None
+            raise TransportError(f"HTTP status {exc.code}", status_code=exc.code) from None
         except (URLError, OSError, ValueError) as exc:
             raise TransportError(f"HTTP request failed ({type(exc).__name__})") from None

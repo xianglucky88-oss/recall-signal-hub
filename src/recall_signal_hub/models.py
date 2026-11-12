@@ -32,6 +32,27 @@ class SourceState:
     cursor: str | None
     consecutive_failures: int
     not_before: int
+    applied_generation: int | None = None
+
+
+@dataclass(frozen=True)
+class SnapshotPage:
+    """One decoded page of a generation. ``token`` is opaque: never parsed or ordered."""
+    generation: int
+    documents: tuple[SourceDocument, ...]
+    next_token: str | None
+    content_hash: str
+
+
+@dataclass(frozen=True)
+class ReceptionState:
+    """Recoverable receive progress for a snapshot generation not yet in force."""
+    source: str
+    generation: int
+    received_pages: int
+    received_records: int
+    complete: bool
+    next_token: str | None
 
 
 @dataclass(frozen=True)
@@ -56,6 +77,7 @@ class BatchResult:
     cases_changed: int
     alerts_created: int
     cursor: str | None
+    generation: int | None = None
 
 
 @dataclass(frozen=True)
