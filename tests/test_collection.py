@@ -16,7 +16,8 @@ def test_fixture_flow_and_restart_are_idempotent(tmp_path):
         pipeline=CollectionPipeline(store)
         for adapter in adapters:assert pipeline.collect(adapter,now=100).status=="completed"
         counts=store.counts()
-        assert counts==dict(raw_evidence=4,rejected_records=1,cases=2,source_signals=3,case_revisions=3,outbox=2)
+        assert counts==dict(raw_evidence=4,rejected_records=1,cases=2,source_signals=3,
+                            case_revisions=3,revision_evidence=4,outbox=2)
     with RecallStore(database) as store:
         for adapter in adapters:
             result=CollectionPipeline(store).collect(adapter,now=101)

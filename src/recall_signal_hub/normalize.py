@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime
 
 from .models import RecallSignal, SourceDocument
-from .risk import RiskError, RiskPolicy
+from .risk import RiskDecision, RiskError, RiskPolicy
 
 
 class NormalizationError(ValueError):
@@ -27,13 +28,26 @@ def evidence_bytes(document: SourceDocument) -> bytes:
 
 
 def classify_severity(hazard: str, supplied: str | None) -> str:
+    return classify_decision(hazard, supplied).severity
+
+
+def classify_decision(hazard: str, supplied: str | None) -> RiskDecision:
     try:
-        return RiskPolicy().assess(canonical_text(hazard), canonical_text(supplied or "")).severity
+        return RiskPolicy().assess(canonical_text(hazard), canonical_text(supplied or ""))
     except RiskError as exc:
         raise NormalizationError(str(exc)) from exc
 
 
-def normalize(document: SourceDocument) -> RecallSignal:
+@dataclass(frozen=True)
+class NormalizedRecord:
+    signal: RecallSignal
+    policy_version: str
+    decision_reason: str
+    supplied_severity: str | None
+
+
+def normalize_record(document: SourceDocument) -> NormalizedRecord:
+    """Normalize a document and retain the exact risk rule identity that classified it."""
     if not document.source.strip() or not document.source_id.strip():
         raise NormalizationError("source and source_id are required")
     if not isinstance(document.published_at, str):
@@ -51,9 +65,16 @@ def normalize(document: SourceDocument) -> RecallSignal:
     supplied = payload.get("severity")
     if supplied is not None and not isinstance(supplied, str):
         raise NormalizationError("severity must be text")
-    return RecallSignal(
+    decision = classify_decision(payload["hazard"], supplied)
+    signal = RecallSignal(
         source=document.source, source_id=document.source_id, published_at=document.published_at,
         product=canonical_text(payload["product"]), brand=canonical_text(payload["brand"]),
         market=canonical_text(payload["market"]), hazard=canonical_text(payload["hazard"]),
-        severity=classify_severity(payload["hazard"], supplied),
+        severity=decision.severity,
         evidence_hash=hashlib.sha256(evidence_bytes(document)).hexdigest())
+    return NormalizedRecord(signal, decision.policy_version, decision.reason,
+                            canonical_text(supplied) if supplied is not None else None)
+
+
+def normalize(document: SourceDocument) -> RecallSignal:
+    return normalize_record(document).signal

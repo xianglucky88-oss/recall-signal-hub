@@ -4,12 +4,14 @@ import argparse
 from dataclasses import asdict
 import json
 import os
+import sys
 import time
 
 from .alerts import AlertDispatcher, RecordingSink, WebhookSink
+from .evidence import verify_evidence_package
 from .pipeline import CollectionPipeline
 from .sources import FixtureSource, HttpSource
-from .storage import RecallStore
+from .storage import EvidenceExportFailed, IncompleteEvidenceChain, RecallStore
 
 
 def main() -> None:
@@ -27,7 +29,18 @@ def main() -> None:
     dispatch.add_argument("--webhook", action="store_true", help="read receiver endpoint from RECALL_WEBHOOK_URL")
     inspect = commands.add_parser("inspect")
     inspect.add_argument("--database", required=True)
+    export = commands.add_parser("export", help="export a frozen, self-verifying evidence package for one revision")
+    export.add_argument("--database", required=True)
+    export.add_argument("--case-key", required=True)
+    export.add_argument("--revision", required=True, type=int)
+    export.add_argument("--output", required=True)
+    verify = commands.add_parser("verify", help="offline, read-only verification of an evidence package (no database)")
+    verify.add_argument("package")
     args = parser.parse_args()
+    if args.command == "verify":
+        report = verify_evidence_package(args.package)
+        print(json.dumps(report.as_dict(), ensure_ascii=False))
+        raise SystemExit(0 if report.ok else 2)
     with RecallStore(args.database) as store:
         if args.command == "collect":
             if args.fixture:
@@ -49,6 +62,17 @@ def main() -> None:
             sink = WebhookSink(endpoint) if endpoint else RecordingSink()
             result = AlertDispatcher(store.outbox,sink).dispatch()
             print(json.dumps(result))
+        elif args.command == "export":
+            try:
+                result = store.export_evidence_package(args.case_key, args.revision, args.output)
+            except IncompleteEvidenceChain as exc:
+                print(json.dumps({"status":"incomplete-evidence-chain","error":str(exc)}, ensure_ascii=False),
+                      file=sys.stderr)
+                raise SystemExit(3)
+            except EvidenceExportFailed as exc:
+                print(json.dumps({"status":"export-failed","error":str(exc)}, ensure_ascii=False), file=sys.stderr)
+                raise SystemExit(4)
+            print(json.dumps({"status":"exported", **result}, ensure_ascii=False))
         else:
             print(json.dumps({"cases":store.list_cases(),"counts":store.counts()},ensure_ascii=False))
 

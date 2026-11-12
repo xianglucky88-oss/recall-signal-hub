@@ -53,6 +53,20 @@ SQLite 每个 worker 使用独立连接，WAL 与 `BEGIN IMMEDIATE` 保障写入
 
 测试入口：`tests/test_collection.py` 的故障注入、竞争游标、重开数据库和完整性检查。
 
+## 证据闭包与离线核验
+
+`source_signals` 只保留每个来源记录的最新状态，同来源 ID 改写会覆盖旧行，因此导出时无法用当前来源行反推历史修订实际依赖的材料。修订生成的同一事务内，`revision_evidence` 冻结该修订的最小证据闭包：参与归并的每条来源声明快照（标准化字段、`evidence_hash`、风险策略版本、判定原因、发布方是否显式给等级）及其对应的原始业务证据哈希。停用修订的闭包为空，其业务摘要由修订行本身保留。采集时新的声明-证据对应关系与修订在同一事务提交，不存在修订已提交而闭包缺失的中间状态。
+
+证据包（`evidence.py`，格式 `recall-evidence-package/1`）是确定性 zip：`manifest.json` 加 `evidence/<sha256>.bin`。清单按稳定键排序、含包摘要（不含摘要字段自身的规范字节哈希），zip 条目顺序与导出时间不影响字节结果；同修订重复导出字节一致。清单同时内嵌当时风险策略的完整规则快照和归并契约标识，策略版本在 `risk.POLICY_REGISTRY` 永久登记，后来规则调整后旧包仍按内嵌快照解释，不读取任何活策略。
+
+核验器不连接数据库、不发起网络请求、不打开任何写连接：逐项重算原文字节哈希、规范再序列化哈希、引用闭包（缺件、悬挂引用、未引用对象、越界成员）、原文到标准化字段的确定性派生、`case_key` 身份、用内嵌规则重放风险判定、以及从冻结声明重算修订摘要与指纹。它只返回只读报告，绝不回写正式案例或触发通知。包内自洽仅表示字节与关系一致，不代表发布者身份已认证，系统不提供签名服务（报告中的 `trust_scope` 明确这一点）。
+
+导出在独立只读连接的单个快照事务中固定在所请求的 `(case_key, revision)` 上，并发采集不会让导出跟随最新状态。包先写入同级临时文件并通过同一核验器自检，通过后才原子替换目标路径；任何失败都删除临时文件，不会留下能被接受为完整包的产物。早于闭包快照的旧修订、缺失原始证据体或策略规则已不可考的修订，明确抛出 `IncompleteEvidenceChain`，不拼装貌似完整的包。
+
+问题分类包括 `missing-evidence`、`evidence-digest-mismatch`、`dangling-claim-reference`、`wrong-claim-association`、`claim-normalization-mismatch`、`risk-decision-mismatch`、`summary-mismatch`、`manifest-digest-mismatch` 等；合法的包内条目重排不改变清单字节，核验通过。
+
+测试入口：`tests/test_evidence.py`（早晚修订导出、缺件/篡改/替换/错误关联/合法重排矩阵、无数据库核验、旧策略可解释性、失败无残留、只读连接）；CLI 入口为 `export` 与 `verify`。
+
 ## 告警队列与投递
 
 `Outbox.enqueue` 必须加入调用方现有事务，不能独立提交；队列按 `(case_key, revision)` 去重。`Outbox.claim` 原子领取到期任务，领取次数和唯一租约 ID 持久化。
@@ -67,6 +81,7 @@ Webhook 始终携带同一案例修订的固定 `Idempotency-Key`。本地状态
 
 - 传输与发布方格式的变化通过 `SourceAdapter` 输出契约隔离。
 - 产品身份与多来源归并保持在 `reconcile.py`，风险规则在 `risk.py`。
+- 证据闭包的冻结在 `storage.py` 的采集事务内；证据包组装与离线核验是无数据库依赖的 `evidence.py`，不向其中引入 sqlite 或告警投递。
 - 投递协议与队列租约分别位于 `alerts.py` 和 `outbox.py`，不放进采集管线。
 - SQLite 的连接与事务辅助只有 `database.py`；它是共享基础设施，不是每个功能必须重写的业务模块。
 - 根目录 CLI 只组装依赖，不承载业务判定。

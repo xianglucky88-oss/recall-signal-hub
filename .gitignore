@@ -40,3 +40,6 @@ dist/
 *.sqlite3
 *.log
 .DS_Store
+
+# Demo scratch output (the demo script recreates it on every run)
+demo/workdir/

@@ -37,6 +37,15 @@ DEFAULT_RULES = (
     HazardRule("contamination", "medium", "contamination"),
 )
 
+# Every policy version ever used to write evidence is retained here. Old evidence
+# packages embed their own rule snapshot, but this registry lets later code still
+# replay historical decisions when the live policy has moved on.
+POLICY_REGISTRY: dict[str, tuple[HazardRule, ...]] = {"baseline-1": DEFAULT_RULES}
+
+
+def policy_rules(version: str) -> tuple[HazardRule, ...] | None:
+    return POLICY_REGISTRY.get(version)
+
 
 class RiskPolicy:
     """A versioned, explainable rule policy; no model or external service needed."""
