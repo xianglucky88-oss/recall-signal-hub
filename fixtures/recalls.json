@@ -1,0 +1,12 @@
+{
+  "sources": {
+    "consumer-agency": [
+      {"source_id":"agency-101","cursor":1,"published_at":"2026-10-01T08:00:00Z","payload":{"brand":"Northline","product":"Travel Kettle K100","market":"EU","hazard":"overheat","severity":"medium"}},
+      {"source_id":"agency-102","cursor":2,"published_at":"2026-10-01T09:00:00Z","payload":{"brand":"Home Circle","product":"Lamp L2","market":"US","hazard":"electric shock"}}
+    ],
+    "manufacturer-bulletins": [
+      {"source_id":"bulletin-77","cursor":1,"published_at":"2026-10-02T08:00:00Z","payload":{"brand":"NORTHLINE","product":"Travel Kettle K100","market":"EU","hazard":"fire","severity":"high"}},
+      {"source_id":"bulletin-invalid","cursor":2,"published_at":"2026-10-02T09:00:00Z","payload":{"brand":"Northline","product":"","market":"EU","hazard":"fire"}}
+    ]
+  }
+}

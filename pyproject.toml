@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "recall-signal-hub"
+version = "0.1.0"
+description = "Consumer-product recall signal aggregation, evidence preservation, and alert delivery"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8.3,<9"]
+
+[project.scripts]
+recall-signal-hub = "recall_signal_hub.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
